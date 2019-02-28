@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"google.golang.org/grpc"
 
@@ -16,7 +18,7 @@ func main() {
 	// in the `proxy_plugin` configuration.
 	// The root will be used to store the snapshots.
 	if len(os.Args) < 4 {
-		fmt.Printf("invalid args: usage: %s <unix addr> <root>\n", os.Args[0])
+		fmt.Printf("invalid args: usage: %s <unix addr> <vgname> <lvpoolname>\n", os.Args[0])
 		os.Exit(1)
 	}
 
@@ -40,6 +42,16 @@ func main() {
 
 	// Register the service with the gRPC server
 	snapshotsapi.RegisterSnapshotsServer(rpc, service)
+
+	var gracefulstop = make(chan os.Signal)
+	signal.Notify(gracefulstop, syscall.SIGTERM)
+	signal.Notify(gracefulstop, syscall.SIGINT)
+	signal.Notify(gracefulstop, syscall.SIGSTOP)
+	go func() {
+		<-gracefulstop
+		rpc.GracefulStop()
+		os.Remove(os.Args[1])
+	}()
 
 	// Listen and serve
 	l, err := net.Listen("unix", os.Args[1])
