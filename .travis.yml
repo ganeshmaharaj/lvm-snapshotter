@@ -1,0 +1,20 @@
+language: go
+
+go:
+  - "1.11"
+  - "1.12"
+  - tip
+
+env:
+  - GO111MODULE=on
+
+go_import_path: github.com/ganeshmaharaj/lvm-snapshotter
+
+matrix:
+  allow_failures:
+    - go: tip
+
+script:
+  - go env
+  - go fmt
+  - env GO111MODULE=on go build
