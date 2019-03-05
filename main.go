@@ -11,6 +11,7 @@ import (
 
 	snapshotsapi "github.com/containerd/containerd/api/services/snapshots/v1"
 	"github.com/containerd/containerd/contrib/snapshotservice"
+	lvms "github.com/ganeshmaharaj/lvm-snapshotter/lvmsnapshotter"
 )
 
 func main() {
@@ -29,7 +30,7 @@ func main() {
 	// snapshotter and a root directory. Your custom snapshotter will be
 	// much more useful than using a snapshotter which is already included.
 	// https://godoc.org/github.com/containerd/containerd/snapshots#Snapshotter
-	sn, err := NewSnapshotter(os.Args[2], os.Args[3])
+	sn, err := lvms.NewSnapshotter(os.Args[2], os.Args[3])
 	if err != nil {
 		fmt.Printf("error: %v\n", err)
 		os.Exit(1)

@@ -4,7 +4,7 @@ Copyright Intel Corporation
 Fill this thing up
 */
 
-package main
+package lvmsnapshotter
 
 import (
 	"context"
