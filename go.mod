@@ -14,6 +14,7 @@ require (
 	github.com/opencontainers/runc v0.1.1 // indirect
 	github.com/pkg/errors v0.8.1
 	github.com/sirupsen/logrus v1.3.0 // indirect
+	github.com/urfave/cli v1.20.0
 	go.etcd.io/bbolt v1.3.2 // indirect
 	google.golang.org/grpc v1.18.0
 	gotest.tools v2.2.0+incompatible // indirect
