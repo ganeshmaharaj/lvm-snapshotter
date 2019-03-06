@@ -198,7 +198,6 @@ func (o *snapshotter) Mounts(ctx context.Context, key string) ([]mount.Mount, er
 func (o *snapshotter) Commit(ctx context.Context, name, key string, opts ...snapshots.Opt) error {
 	llog.Printf("Committing snapshot for key %s\n", key)
 	ctx, t, err := o.ms.TransactionContext(ctx, true)
-	var mountpath string
 	if err != nil {
 		return err
 	}
@@ -208,30 +207,11 @@ func (o *snapshotter) Commit(ctx context.Context, name, key string, opts ...snap
 		return err
 	}
 
-	if mountpath, err = mountVolume(o.vgname, id); err != nil {
-		return err
-	}
-	usage, err := fs.DiskUsage(ctx, mountpath)
-	if err != nil {
-		return err
-	}
-	if err := unmountVolume(mountpath); err != nil {
-		return errors.Wrap(err, "unable to unmount temp volume at temp location")
-	}
-
-	if _, err := storage.CommitActive(ctx, key, name, snapshots.Usage(usage), opts...); err != nil {
+	if _, err := storage.CommitActive(ctx, key, name, snapshots.Usage{}, opts...); err != nil {
 		if rerr := t.Rollback(); rerr != nil {
 			log.G(ctx).WithError(rerr).Warn("failed to rollback transaction")
 		}
 		return errors.Wrap(err, "failed to commit snapshot")
-	}
-	if _, err := changepermLV(o.vgname, id, true); err != nil {
-		return errors.Wrap(err, "Failed to change permissions on volume")
-	}
-
-	// Deactivate the volume in LVM to free up /dev/dm-XX names on the host
-	if _, err := toggleactivateLV(o.vgname, id, false); err != nil {
-		return errors.Wrap(err, "Failed to change permissions on volume")
 	}
 
 	err = t.Commit()
@@ -349,7 +329,7 @@ func (o *snapshotter) mounts(s storage.Snapshot) []mount.Mount {
 	return []mount.Mount{
 		{
 			Source: source,
-			Type:   "xfs",
+			Type:   "ext4",
 			Options: []string{
 				roFlag,
 			},
@@ -396,8 +376,8 @@ func createLVMVolume(lvname string, vgname string, lvpoolname string, parent str
 
 	if parent == "" {
 		//This volume is fresh. We should format it.
-		cmd = "mkfs.xfs"
-		args = []string{"-f", "/dev/" + vgname + "/" + lvname}
+		cmd = "mkfs.ext4"
+		args = []string{"-E", "nodiscard,lazy_itable_init=0,lazy_journal_init=0", "/dev/" + vgname + "/" + lvname}
 		out, err = runCommand(cmd, args)
 	}
 
@@ -461,7 +441,7 @@ func toggleactivateLV(vgname string, lvname string, activate bool) (string, erro
 
 func mountVolume(vgname string, lvname string) (string, error) {
 	cmd := "mount"
-	args := []string{"-oro", "-t", "xfs", "/dev/" + vgname + "/" + lvname}
+	args := []string{"-oro", "-t", "ext4", "/dev/" + vgname + "/" + lvname}
 	var mountPath string
 	var err error
 
