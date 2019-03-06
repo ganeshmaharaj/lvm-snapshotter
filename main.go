@@ -60,6 +60,7 @@ func prepareSnapshotter(addr, vgname, lvpoolname string) error {
 	if err != nil {
 		return err
 	}
+	fmt.Printf("Ready and listening on socket %s...", addr)
 	if err := rpc.Serve(l); err != nil {
 		return err
 	}
