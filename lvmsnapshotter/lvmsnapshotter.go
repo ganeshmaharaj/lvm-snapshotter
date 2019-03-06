@@ -25,7 +25,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-var vImgSize = "10G"
+var vImgSize = "16M"
 var metaVolumeMountPath = "/mnt/contd-lvm-snapshotter-db-holder/"
 var metavolume = "contd-metadata-holder"
 
@@ -202,11 +202,6 @@ func (o *snapshotter) Commit(ctx context.Context, name, key string, opts ...snap
 		return err
 	}
 
-	id, _, _, err := storage.GetInfo(ctx, key)
-	if err != nil {
-		return err
-	}
-
 	if _, err := storage.CommitActive(ctx, key, name, snapshots.Usage{}, opts...); err != nil {
 		if rerr := t.Rollback(); rerr != nil {
 			log.G(ctx).WithError(rerr).Warn("failed to rollback transaction")
@@ -217,10 +212,6 @@ func (o *snapshotter) Commit(ctx context.Context, name, key string, opts ...snap
 	err = t.Commit()
 	if err != nil {
 		llog.Printf("Commit of transaction %+v failed\n", t)
-		if _, derr := removeLVMVolume(o.vgname, id); derr != nil {
-			llog.Printf("Unable to delete volume %s", id)
-		}
-		return err
 	}
 	return nil
 }
@@ -329,7 +320,7 @@ func (o *snapshotter) mounts(s storage.Snapshot) []mount.Mount {
 	return []mount.Mount{
 		{
 			Source: source,
-			Type:   "ext4",
+			Type:   "xfs",
 			Options: []string{
 				roFlag,
 			},
@@ -376,8 +367,8 @@ func createLVMVolume(lvname string, vgname string, lvpoolname string, parent str
 
 	if parent == "" {
 		//This volume is fresh. We should format it.
-		cmd = "mkfs.ext4"
-		args = []string{"-E", "nodiscard,lazy_itable_init=0,lazy_journal_init=0", "/dev/" + vgname + "/" + lvname}
+		cmd = "mkfs.xfs"
+		args = []string{"-K", "-f", "/dev/" + vgname + "/" + lvname}
 		out, err = runCommand(cmd, args)
 	}
 
@@ -441,7 +432,7 @@ func toggleactivateLV(vgname string, lvname string, activate bool) (string, erro
 
 func mountVolume(vgname string, lvname string) (string, error) {
 	cmd := "mount"
-	args := []string{"-oro", "-t", "ext4", "/dev/" + vgname + "/" + lvname}
+	args := []string{"-oro", "-t", "xfs", "/dev/" + vgname + "/" + lvname}
 	var mountPath string
 	var err error
 
