@@ -36,7 +36,11 @@ func prepareSnapshotter(addr, vgname, lvpoolname string) error {
 	if err != nil {
 		return err
 	}
-	defer sn.Close()
+	defer func() {
+		if closeErr := sn.Close(); closeErr != nil {
+			fmt.Printf("error: %v\n", closeErr)
+		}
+	}()
 
 	// Convert the snapshotter to a gRPC service,
 	// example in github.com/containerd/containerd/contrib/snapshotservice
@@ -52,7 +56,9 @@ func prepareSnapshotter(addr, vgname, lvpoolname string) error {
 	go func() {
 		<-gracefulstop
 		rpc.GracefulStop()
-		os.Remove(os.Args[1])
+		if rmErr := os.Remove(addr); rmErr != nil {
+			fmt.Printf("error: unable to remove %s: %v\n", addr, rmErr)
+		}
 	}()
 
 	// Listen and serve
