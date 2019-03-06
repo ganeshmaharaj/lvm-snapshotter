@@ -41,7 +41,7 @@ function create_lvm_stuff()
 
 function start_snapshotter()
 {
-  cmd="$(pwd)/lvm-snapshotter /var/run/lvmsnapshotter.sock vgthin lvthinpool"
+  cmd="$(pwd)/lvm-snapshotter --addr /var/run/lvmsnapshotter.sock --vgname vgthin --lvpoolname lvthinpool"
   nohup sudo $cmd 2>&1 > /tmp/lvmsnapshotter.log &
 }
 
