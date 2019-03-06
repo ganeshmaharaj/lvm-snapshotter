@@ -38,7 +38,10 @@ type snapshotter struct {
 // NewSnapshotter returns a Snapshotter which copies layers on the underlying
 // file system. A metadata file is stored under the root.
 func NewSnapshotter(vgname string, lvpoolname string) (snapshots.Snapshotter, error) {
+	var fi os.FileInfo
+
 	llog.Printf("Starting a new lvm snapshotter\n")
+	var err error
 
 	if vgname == "" || lvpoolname == "" {
 		llog.Printf("Either vgname or lvpoolname is empty. Both are needed for the plugin to work\n")
@@ -47,11 +50,11 @@ func NewSnapshotter(vgname string, lvpoolname string) (snapshots.Snapshotter, er
 
 	// Check if the mount directory exists. If not, create it. if it is a file then exit
 
-	if _, err := checkVG(vgname); err != nil {
+	if _, err = checkVG(vgname); err != nil {
 		return nil, errors.Wrap(err, "VG not found")
 	}
 
-	_, err := checkLV(vgname, lvpoolname)
+	_, err = checkLV(vgname, lvpoolname)
 	if err != nil {
 		return nil, errors.Wrap(err, "LV not found")
 	}
@@ -59,19 +62,19 @@ func NewSnapshotter(vgname string, lvpoolname string) (snapshots.Snapshotter, er
 	_, err = checkLV(vgname, metavolume)
 	if err != nil {
 		// Create a volume to hold the metadata.db file.
-		if _, err := createLVMVolume(metavolume, vgname, lvpoolname, "", snapshots.KindUnknown); err != nil {
+		if _, err = createLVMVolume(metavolume, vgname, lvpoolname, "", snapshots.KindUnknown); err != nil {
 			llog.Printf("Unable to create the metadata volume\n")
 			return nil, err
 		}
 	} else {
 		llog.Printf("Re-using the existing volume\n")
 	}
-	if _, err := toggleactivateLV(vgname, metavolume, true); err != nil {
+	if _, err = toggleactivateLV(vgname, metavolume, true); err != nil {
 		return nil, errors.Wrap(err, "Unable to activate metavolume")
 	}
-	if fi, err := os.Stat(metaVolumeMountPath); os.IsNotExist(err) {
+	if fi, err = os.Stat(metaVolumeMountPath); os.IsNotExist(err) {
 		if errdir := os.MkdirAll(metaVolumeMountPath, 0700); errdir != nil {
-			return nil, err
+			return nil, errdir
 		}
 	} else {
 		if !fi.IsDir() {
@@ -81,7 +84,7 @@ func NewSnapshotter(vgname string, lvpoolname string) (snapshots.Snapshotter, er
 
 	cmd := "mount"
 	args := []string{"-rw", "/dev/" + vgname + "/" + metavolume, metaVolumeMountPath}
-	if _, err := runCommand(cmd, args); err != nil {
+	if _, err = runCommand(cmd, args); err != nil {
 		return nil, err
 	}
 	ms, err := storage.NewMetaStore(filepath.Join(metaVolumeMountPath, "metadata.db"))
@@ -107,7 +110,11 @@ func (o *snapshotter) Stat(ctx context.Context, key string) (snapshots.Info, err
 	if err != nil {
 		return snapshots.Info{}, err
 	}
-	defer t.Rollback()
+	defer func() {
+		if rerr := t.Rollback(); rerr != nil {
+			log.G(ctx).WithError(rerr).Warn("Failed to rollback transaction")
+		}
+	}()
 	_, info, _, err := storage.GetInfo(ctx, key)
 	if err != nil {
 		return snapshots.Info{}, err
@@ -125,7 +132,9 @@ func (o *snapshotter) Update(ctx context.Context, info snapshots.Info, fieldpath
 
 	info, err = storage.UpdateInfo(ctx, info, fieldpaths...)
 	if err != nil {
-		t.Rollback()
+		if rerr := t.Rollback(); err != nil {
+			log.G(ctx).WithError(rerr).Warn("Failed to rollback transaction")
+		}
 		return snapshots.Info{}, err
 	}
 
@@ -143,8 +152,11 @@ func (o *snapshotter) Usage(ctx context.Context, key string) (snapshots.Usage, e
 	if err != nil {
 		return snapshots.Usage{}, err
 	}
-	defer t.Rollback()
-
+	defer func() {
+		if rerr := t.Rollback(); err != nil {
+			log.G(ctx).WithError(rerr).Warn("Failed to rollback transaction")
+		}
+	}()
 	id, info, usage, err := storage.GetInfo(ctx, key)
 	if err != nil {
 		return snapshots.Usage{}, err
@@ -154,7 +166,11 @@ func (o *snapshotter) Usage(ctx context.Context, key string) (snapshots.Usage, e
 		if mountpath, err = mountVolume(o.vgname, id); err != nil {
 			return snapshots.Usage{}, errors.Wrap(err, "Unable to mount volume to calculate usage")
 		}
-		defer unmountVolume(mountpath)
+		defer func() {
+			if mntErr := unmountVolume(mountpath); mntErr != nil {
+				log.G(ctx).WithError(mntErr).Warn("unable to unmount volume")
+			}
+		}()
 		du, err := fs.DiskUsage(ctx, o.getSnapshotDir(id))
 		if err != nil {
 			return snapshots.Usage{}, err
@@ -187,7 +203,9 @@ func (o *snapshotter) Mounts(ctx context.Context, key string) ([]mount.Mount, er
 		return nil, err
 	}
 	s, err := storage.GetSnapshot(ctx, key)
-	t.Rollback()
+	if rerr := t.Rollback(); rerr != nil {
+		log.G(ctx).WithError(rerr).Warn("failed to rollback transaction")
+	}
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get snapshot mount")
 	}
@@ -215,22 +233,22 @@ func (o *snapshotter) Commit(ctx context.Context, name, key string, opts ...snap
 	if err != nil {
 		return err
 	}
-	if err := unmountVolume(mountpath); err != nil {
+	if err = unmountVolume(mountpath); err != nil {
 		return errors.Wrap(err, "unable to unmount temp volume at temp location")
 	}
 
-	if _, err := storage.CommitActive(ctx, key, name, snapshots.Usage(usage), opts...); err != nil {
+	if _, err = storage.CommitActive(ctx, key, name, snapshots.Usage(usage), opts...); err != nil {
 		if rerr := t.Rollback(); rerr != nil {
 			log.G(ctx).WithError(rerr).Warn("failed to rollback transaction")
 		}
 		return errors.Wrap(err, "failed to commit snapshot")
 	}
-	if _, err := changepermLV(o.vgname, id, true); err != nil {
+	if _, err = changepermLV(o.vgname, id, true); err != nil {
 		return errors.Wrap(err, "Failed to change permissions on volume")
 	}
 
 	// Deactivate the volume in LVM to free up /dev/dm-XX names on the host
-	if _, err := toggleactivateLV(o.vgname, id, false); err != nil {
+	if _, err = toggleactivateLV(o.vgname, id, false); err != nil {
 		return errors.Wrap(err, "Failed to change permissions on volume")
 	}
 
@@ -287,7 +305,11 @@ func (o *snapshotter) Walk(ctx context.Context, fn func(context.Context, snapsho
 	if err != nil {
 		return err
 	}
-	defer t.Rollback()
+	defer func() {
+		if rerr := t.Rollback(); rerr != nil {
+			log.G(ctx).WithError(rerr).Warn("Failed to rollback transaction")
+		}
+	}()
 	return storage.WalkInfo(ctx, fn)
 }
 
@@ -386,7 +408,7 @@ func createLVMVolume(lvname string, vgname string, lvpoolname string, parent str
 	}
 
 	//Let's go and create the volume
-	if out, err := runCommand(cmd, args); err != nil {
+	if out, err = runCommand(cmd, args); err != nil {
 		return out, errors.Wrap(err, "Unable to create volume")
 	}
 
@@ -412,10 +434,11 @@ func removeLVMVolume(lvname string, vgname string) (string, error) {
 }
 
 func checkVG(vgname string) (string, error) {
+	var err error
 	output := ""
 	cmd := "vgs"
 	args := []string{vgname, "--options", "vg_name", "--no-headings"}
-	if output, err := runCommand(cmd, args); err != nil {
+	if output, err = runCommand(cmd, args); err != nil {
 		llog.Printf("VG %s not found", vgname)
 		return output, err
 	}
@@ -423,10 +446,11 @@ func checkVG(vgname string) (string, error) {
 }
 
 func checkLV(vgname string, lvname string) (string, error) {
+	var err error
 	output := ""
 	cmd := "lvs"
 	args := []string{vgname + "/" + lvname, "--options", "lv_name", "--no-heading"}
-	if output, err := runCommand(cmd, args); err != nil {
+	if output, err = runCommand(cmd, args); err != nil {
 		llog.Printf("LV %s not found", lvname)
 		return output, err
 	}
