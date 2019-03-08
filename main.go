@@ -52,7 +52,6 @@ func prepareSnapshotter(addr, vgname, lvpoolname string) error {
 	var gracefulstop = make(chan os.Signal)
 	signal.Notify(gracefulstop, syscall.SIGTERM)
 	signal.Notify(gracefulstop, syscall.SIGINT)
-	signal.Notify(gracefulstop, syscall.SIGSTOP)
 	go func() {
 		<-gracefulstop
 		rpc.GracefulStop()

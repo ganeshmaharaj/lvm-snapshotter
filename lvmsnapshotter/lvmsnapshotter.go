@@ -322,7 +322,7 @@ func (o *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, k
 	}
 	defer func() {
 		if err != nil && t != nil {
-			if rerr := t.Rollback(); err != nil {
+			if rerr := t.Rollback(); rerr != nil {
 				log.G(ctx).WithError(rerr).Warn("Failed to rollback transaction")
 			}
 		}
@@ -382,8 +382,7 @@ func (o *snapshotter) mounts(s storage.Snapshot) []mount.Mount {
 // Close closes the snapshotter
 func (o *snapshotter) Close() error {
 	llog.Printf("Close function called")
-	var err error
-	err = o.ms.Close()
+	var err = o.ms.Close()
 	if err != nil {
 		return err
 	}
