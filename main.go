@@ -83,18 +83,18 @@ func createApp() error {
 	app.Usage = usage
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
-			Name:  "addr",
-			Usage: "the socket the snapshotter will listen on, it is the 'address' in the containerd 'proxy plugin' configuration.",
+			Name:        "addr",
+			Usage:       "the socket the snapshotter will listen on, it is the 'address' in the containerd 'proxy plugin' configuration.",
 			Destination: &addr,
 		},
 		cli.StringFlag{
-			Name:  "vgname",
-			Usage: "name of created volume group",
+			Name:        "vgname",
+			Usage:       "name of created volume group",
 			Destination: &vgname,
 		},
 		cli.StringFlag{
-			Name:  "lvpoolname",
-			Usage: "name of logical volume pool",
+			Name:        "lvpoolname",
+			Usage:       "name of logical volume pool",
 			Destination: &lvpoolname,
 		},
 	}
