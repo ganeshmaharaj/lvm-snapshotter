@@ -3,7 +3,6 @@ package lvmsnapshotter
 import (
 	"fmt"
 	"io/ioutil"
-	llog "log"
 	"os"
 	"os/exec"
 	"strings"
@@ -61,8 +60,7 @@ func checkVG(vgname string) (string, error) {
 	cmd := "vgs"
 	args := []string{vgname, "--options", "vg_name", "--no-headings"}
 	if output, err = runCommand(cmd, args); err != nil {
-		llog.Printf("VG %s not found", vgname)
-		return output, err
+		return output, errors.Wrapf(err, "VG %s not found", vgname)
 	}
 	return output, nil
 }
@@ -73,8 +71,7 @@ func checkLV(vgname string, lvname string) (string, error) {
 	cmd := "lvs"
 	args := []string{vgname + "/" + lvname, "--options", "lv_name", "--no-heading"}
 	if output, err = runCommand(cmd, args); err != nil {
-		llog.Printf("LV %s not found", lvname)
-		return output, err
+		return output, errors.Wrapf(err, "LV %s not found", lvname)
 	}
 	return output, nil
 }
