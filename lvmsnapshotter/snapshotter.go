@@ -8,7 +8,6 @@ package lvmsnapshotter
 
 import (
 	"context"
-	llog "log"
 	"os"
 	"path/filepath"
 
@@ -36,12 +35,10 @@ type snapshotter struct {
 func NewSnapshotter(vgname string, lvpoolname string) (snapshots.Snapshotter, error) {
 	var fi os.FileInfo
 
-	llog.Printf("Starting a new lvm snapshotter\n")
 	var err error
 
 	if vgname == "" || lvpoolname == "" {
-		llog.Printf("Either vgname or lvpoolname is empty. Both are needed for the plugin to work\n")
-		return nil, os.ErrNotExist
+		return nil, errors.New("Either volumegroup or logical volume has not been provided")
 	}
 
 	// Check if the mount directory exists. If not, create it. if it is a file then exit
@@ -59,11 +56,8 @@ func NewSnapshotter(vgname string, lvpoolname string) (snapshots.Snapshotter, er
 	if err != nil {
 		// Create a volume to hold the metadata.db file.
 		if _, err = createLVMVolume(metavolume, vgname, lvpoolname, "", snapshots.KindUnknown); err != nil {
-			llog.Printf("Unable to create the metadata volume\n")
-			return nil, err
+			return nil, errors.Wrap(err, "Unable to create metadata holding volume")
 		}
-	} else {
-		llog.Printf("Re-using the existing volume\n")
 	}
 	if _, err = toggleactivateLV(vgname, metavolume, true); err != nil {
 		return nil, errors.Wrap(err, "Unable to activate metavolume")
@@ -101,7 +95,7 @@ func NewSnapshotter(vgname string, lvpoolname string) (snapshots.Snapshotter, er
 // Should be used for parent resolution, existence checks and to discern
 // the kind of snapshot.
 func (o *snapshotter) Stat(ctx context.Context, key string) (snapshots.Info, error) {
-	llog.Printf("Stat called for key %s\n", key)
+	log.G(ctx).Debugf("Stat called for: %s", key)
 	ctx, t, err := o.ms.TransactionContext(ctx, false)
 	if err != nil {
 		return snapshots.Info{}, err
@@ -120,7 +114,7 @@ func (o *snapshotter) Stat(ctx context.Context, key string) (snapshots.Info, err
 }
 
 func (o *snapshotter) Update(ctx context.Context, info snapshots.Info, fieldpaths ...string) (snapshots.Info, error) {
-	llog.Printf("Updating snapshot with info  %+v\n", info)
+	log.G(ctx).Debugf("Update called for : %+v", info)
 	ctx, t, err := o.ms.TransactionContext(ctx, true)
 	if err != nil {
 		return snapshots.Info{}, err
@@ -142,7 +136,7 @@ func (o *snapshotter) Update(ctx context.Context, info snapshots.Info, fieldpath
 }
 
 func (o *snapshotter) Usage(ctx context.Context, key string) (snapshots.Usage, error) {
-	llog.Printf("Finding usage of key  %+v\n", key)
+	log.G(ctx).Debugf("Usage of key %+v", key)
 	ctx, t, err := o.ms.TransactionContext(ctx, false)
 	var mountpath string
 	if err != nil {
@@ -174,17 +168,17 @@ func (o *snapshotter) Usage(ctx context.Context, key string) (snapshots.Usage, e
 		usage = snapshots.Usage(du)
 	}
 
-	llog.Printf("usage of key %s is %+v\n", key, usage)
+	log.G(ctx).Debugf("Usage of key %s is %+v", key, usage)
 	return usage, nil
 }
 
 func (o *snapshotter) Prepare(ctx context.Context, key, parent string, opts ...snapshots.Opt) ([]mount.Mount, error) {
-	llog.Printf("Starting prepare\n")
+	log.G(ctx).Debugf("Preparing snapshot for key %s with parent %s", key, parent)
 	return o.createSnapshot(ctx, snapshots.KindActive, key, parent, opts)
 }
 
 func (o *snapshotter) View(ctx context.Context, key, parent string, opts ...snapshots.Opt) ([]mount.Mount, error) {
-	llog.Printf("Starting View\n")
+	log.G(ctx).Debugf("Viewing snapshot for key %s with parent %s", key, parent)
 	return o.createSnapshot(ctx, snapshots.KindView, key, parent, opts)
 }
 
@@ -193,7 +187,7 @@ func (o *snapshotter) View(ctx context.Context, key, parent string, opts ...snap
 //
 // This can be used to recover mounts after calling View or Prepare.
 func (o *snapshotter) Mounts(ctx context.Context, key string) ([]mount.Mount, error) {
-	llog.Printf("Finding mounts for key %s\n", key)
+	log.G(ctx).Debugf("Finding mounts for key %s", key)
 	ctx, t, err := o.ms.TransactionContext(ctx, false)
 	if err != nil {
 		return nil, err
@@ -205,12 +199,12 @@ func (o *snapshotter) Mounts(ctx context.Context, key string) ([]mount.Mount, er
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get snapshot mount")
 	}
-	llog.Printf("Mounts for key %s is %+v\n", key, o.mounts(s))
+	log.G(ctx).Debugf("Mounts for key %s is %+v", key, o.mounts(s))
 	return o.mounts(s), nil
 }
 
 func (o *snapshotter) Commit(ctx context.Context, name, key string, opts ...snapshots.Opt) error {
-	llog.Printf("Committing snapshot for key %s\n", key)
+	log.G(ctx).Debugf("Commit snapshot for key %s", key)
 	ctx, t, err := o.ms.TransactionContext(ctx, true)
 	var mountpath string
 	if err != nil {
@@ -250,9 +244,9 @@ func (o *snapshotter) Commit(ctx context.Context, name, key string, opts ...snap
 
 	err = t.Commit()
 	if err != nil {
-		llog.Printf("Commit of transaction %+v failed\n", t)
+		log.G(ctx).WithError(err).Warn("Transaction commit failed")
 		if _, derr := removeLVMVolume(o.vgname, id); derr != nil {
-			llog.Printf("Unable to delete volume %s", id)
+			log.G(ctx).WithError(derr).Warn("Unable to delete volume")
 		}
 		return err
 	}
@@ -262,7 +256,7 @@ func (o *snapshotter) Commit(ctx context.Context, name, key string, opts ...snap
 // Remove abandons the transaction identified by key. All resources
 // associated with the key will be removed.
 func (o *snapshotter) Remove(ctx context.Context, key string) (err error) {
-	llog.Printf("Remove contents of key %s\n", key)
+	log.G(ctx).Debugf("Remove contents of key %s", key)
 	ctx, t, err := o.ms.TransactionContext(ctx, true)
 	if err != nil {
 		return err
@@ -296,7 +290,7 @@ func (o *snapshotter) Remove(ctx context.Context, key string) (err error) {
 
 // Walk the committed snapshots.
 func (o *snapshotter) Walk(ctx context.Context, fn func(context.Context, snapshots.Info) error) error {
-	llog.Printf("Walking through %+v\n", ctx)
+	log.G(ctx).Debugf("Walk through %+v", ctx)
 	ctx, t, err := o.ms.TransactionContext(ctx, false)
 	if err != nil {
 		return err
@@ -337,7 +331,7 @@ func (o *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, k
 		pvol = s.ParentIDs[0]
 	}
 	if _, err := createLVMVolume(s.ID, o.vgname, o.lvpoolname, pvol, kind); err != nil {
-		llog.Printf("Unable to create volume")
+		log.G(ctx).WithError(err).Warn("Unable to create volume")
 		return nil, errors.Wrap(err, "Unable to create volume")
 	}
 
@@ -345,7 +339,7 @@ func (o *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, k
 		return nil, err
 	}
 
-	llog.Printf("Mounts for key in func createsnapshot %s is %+v\n", key, o.mounts(s))
+	log.G(ctx).Debugf("Mounts for key %s is %+v", key, o.mounts(s))
 	return o.mounts(s), nil
 }
 
@@ -377,7 +371,6 @@ func (o *snapshotter) mounts(s storage.Snapshot) []mount.Mount {
 
 // Close closes the snapshotter
 func (o *snapshotter) Close() error {
-	llog.Printf("Close function called")
 	var err = o.ms.Close()
 	if err != nil {
 		return err
