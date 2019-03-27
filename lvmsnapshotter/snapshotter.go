@@ -72,9 +72,15 @@ func NewSnapshotter(vgname string, lvpoolname string) (snapshots.Snapshotter, er
 		}
 	}
 
-	cmd := "mount"
-	args := []string{"-rw", "/dev/" + vgname + "/" + metavolume, metaVolumeMountPath}
-	if _, err = runCommand(cmd, args); err != nil {
+	metamount := []mount.Mount{
+		{
+			Source:  "/dev/" + vgname + "/" + metavolume,
+			Type:    "xfs",
+			Options: []string{},
+		},
+	}
+
+	if err = mount.All(metamount, metaVolumeMountPath); err != nil {
 		return nil, err
 	}
 	ms, err := storage.NewMetaStore(filepath.Join(metaVolumeMountPath, "metadata.db"))
@@ -138,7 +144,8 @@ func (o *snapshotter) Update(ctx context.Context, info snapshots.Info, fieldpath
 func (o *snapshotter) Usage(ctx context.Context, key string) (snapshots.Usage, error) {
 	log.G(ctx).Debugf("Usage of key %+v", key)
 	ctx, t, err := o.ms.TransactionContext(ctx, false)
-	var mountpath string
+	var s storage.Snapshot
+	var du fs.Usage
 	if err != nil {
 		return snapshots.Usage{}, err
 	}
@@ -153,19 +160,19 @@ func (o *snapshotter) Usage(ctx context.Context, key string) (snapshots.Usage, e
 	}
 
 	if info.Kind == snapshots.KindActive {
-		if mountpath, err = mountVolume(o.vgname, id); err != nil {
-			return snapshots.Usage{}, errors.Wrap(err, "Unable to mount volume to calculate usage")
-		}
-		defer func() {
-			if mntErr := unmountVolume(mountpath); mntErr != nil {
-				log.G(ctx).WithError(mntErr).Warn("unable to unmount volume")
-			}
-		}()
-		du, err := fs.DiskUsage(ctx, o.getSnapshotDir(id))
-		if err != nil {
+		if s, err = storage.GetSnapshot(ctx, key); err != nil {
 			return snapshots.Usage{}, err
 		}
-		usage = snapshots.Usage(du)
+		mounts := o.mounts(s)
+		if err = mount.WithTempMount(ctx, mounts, func(root string) error {
+			if du, err = fs.DiskUsage(ctx, o.getSnapshotDir(id)); err != nil {
+				return err
+			}
+			usage = snapshots.Usage(du)
+			return nil
+		}); err != nil {
+			return snapshots.Usage{}, err
+		}
 	}
 
 	log.G(ctx).Debugf("Usage of key %s is %+v", key, usage)
@@ -206,7 +213,8 @@ func (o *snapshotter) Mounts(ctx context.Context, key string) ([]mount.Mount, er
 func (o *snapshotter) Commit(ctx context.Context, name, key string, opts ...snapshots.Opt) error {
 	log.G(ctx).Debugf("Commit snapshot for key %s", key)
 	ctx, t, err := o.ms.TransactionContext(ctx, true)
-	var mountpath string
+	var du fs.Usage
+	var usage snapshots.Usage
 	if err != nil {
 		return err
 	}
@@ -216,18 +224,19 @@ func (o *snapshotter) Commit(ctx context.Context, name, key string, opts ...snap
 		return err
 	}
 
-	if mountpath, err = mountVolume(o.vgname, id); err != nil {
+	s, err := storage.GetSnapshot(ctx, key)
+	mounts := o.mounts(s)
+	if err = mount.WithTempMount(ctx, mounts, func(root string) error {
+		if du, err = fs.DiskUsage(ctx, o.getSnapshotDir(id)); err != nil {
+			return err
+		}
+		usage = snapshots.Usage(du)
+		return nil
+	}); err != nil {
 		return err
-	}
-	usage, err := fs.DiskUsage(ctx, mountpath)
-	if err != nil {
-		return err
-	}
-	if err = unmountVolume(mountpath); err != nil {
-		return errors.Wrap(err, "unable to unmount temp volume at temp location")
 	}
 
-	if _, err = storage.CommitActive(ctx, key, name, snapshots.Usage(usage), opts...); err != nil {
+	if _, err = storage.CommitActive(ctx, key, name, usage, opts...); err != nil {
 		if rerr := t.Rollback(); rerr != nil {
 			log.G(ctx).WithError(rerr).Warn("failed to rollback transaction")
 		}
@@ -375,5 +384,9 @@ func (o *snapshotter) Close() error {
 	if err != nil {
 		return err
 	}
-	return unmountVolume(metaVolumeMountPath)
+	err = mount.UnmountAll(metaVolumeMountPath, 0)
+	if err != nil {
+		return err
+	}
+	return nil
 }

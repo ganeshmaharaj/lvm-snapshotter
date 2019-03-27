@@ -2,8 +2,6 @@ package lvmsnapshotter
 
 import (
 	"fmt"
-	"io/ioutil"
-	"os"
 	"os/exec"
 	"strings"
 
@@ -100,35 +98,6 @@ func toggleactivateLV(vgname string, lvname string, activate bool) (string, erro
 		args = append(args, "n")
 	}
 	return runCommand(cmd, args)
-}
-
-func mountVolume(vgname string, lvname string) (string, error) {
-	cmd := "mount"
-	args := []string{"-oro", "-t", "xfs", "/dev/" + vgname + "/" + lvname}
-	var mountPath string
-	var err error
-
-	if mountPath, err = ioutil.TempDir("", vgname+"-"+lvname); err != nil {
-		return "", err
-	}
-	args = append(args, mountPath)
-
-	if _, err := runCommand(cmd, args); err != nil {
-		return "", err
-	}
-	return mountPath, nil
-}
-
-func unmountVolume(mountPath string) error {
-	cmd := "umount"
-	args := []string{mountPath}
-
-	if _, err := runCommand(cmd, args); err != nil {
-		return errors.Wrap(err, "Unable to unmount volume")
-	}
-
-	err := os.RemoveAll(mountPath)
-	return err
 }
 
 func runCommand(cmd string, args []string) (string, error) {
