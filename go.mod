@@ -1,5 +1,7 @@
 module github.com/ganeshmaharaj/lvm-snapshotter
 
+go 1.12
+
 require (
 	github.com/containerd/containerd v1.2.5
 	github.com/containerd/continuity v0.0.0-20181203112020-004b46473808
