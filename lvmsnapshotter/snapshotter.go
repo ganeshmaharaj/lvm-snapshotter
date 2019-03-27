@@ -13,6 +13,8 @@ import (
 
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/mount"
+	"github.com/containerd/containerd/platforms"
+	"github.com/containerd/containerd/plugin"
 	"github.com/containerd/containerd/snapshots"
 	"github.com/containerd/containerd/snapshots/storage"
 
@@ -20,78 +22,88 @@ import (
 	"github.com/pkg/errors"
 )
 
-var vImgSize = "10G"
-var metaVolumeMountPath = "/mnt/contd-lvm-snapshotter-db-holder/"
-var metavolume = "contd-metadata-holder"
+const (
+	metaVolumeMountName = "contd-lvm-snapshotter-db-holder"
+	metavolume          = "contd-metadata-holder"
+)
+
+func init() {
+	plugin.Register(&plugin.Registration{
+		Type:   plugin.SnapshotPlugin,
+		ID:     "lvm",
+		Config: &LVMSnapConfig{},
+		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
+			ic.Meta.Platforms = append(ic.Meta.Platforms, platforms.DefaultSpec())
+
+			config, ok := ic.Config.(*LVMSnapConfig)
+			if !ok {
+				return nil, errors.New("Invalid LVM config")
+			}
+			if err := config.Validate(ic.Root); err != nil {
+				return nil, errors.Wrap(err, "Unable to validate config")
+			}
+
+			return NewSnapshotter(ic.Context, config)
+		},
+	})
+}
 
 type snapshotter struct {
-	vgname     string
-	lvpoolname string
-	ms         *storage.MetaStore
+	config      *LVMSnapConfig
+	ms          *storage.MetaStore
+	metaVolPath string
 }
 
 // NewSnapshotter returns a Snapshotter which copies layers on the underlying
 // file system. A metadata file is stored under the root.
-func NewSnapshotter(vgname string, lvpoolname string) (snapshots.Snapshotter, error) {
-	var fi os.FileInfo
-
+func NewSnapshotter(ctx context.Context, config *LVMSnapConfig) (snapshots.Snapshotter, error) {
 	var err error
 
-	if vgname == "" || lvpoolname == "" {
-		return nil, errors.New("Either volumegroup or logical volume has not been provided")
-	}
-
-	// Check if the mount directory exists. If not, create it. if it is a file then exit
-
-	if _, err = checkVG(vgname); err != nil {
+	if _, err = checkVG(config.VgName); err != nil {
 		return nil, errors.Wrap(err, "VG not found")
 	}
 
-	_, err = checkLV(vgname, lvpoolname)
+	_, err = checkLV(config.VgName, config.ThinPool)
 	if err != nil {
 		return nil, errors.Wrap(err, "LV not found")
 	}
 
-	_, err = checkLV(vgname, metavolume)
+	_, err = checkLV(config.VgName, metavolume)
 	if err != nil {
 		// Create a volume to hold the metadata.db file.
-		if _, err = createLVMVolume(metavolume, vgname, lvpoolname, "", snapshots.KindUnknown); err != nil {
+		if _, err = createLVMVolume(metavolume, config.VgName, config.ThinPool, config.ImageSize, "", snapshots.KindUnknown); err != nil {
 			return nil, errors.Wrap(err, "Unable to create metadata holding volume")
 		}
 	}
-	if _, err = toggleactivateLV(vgname, metavolume, true); err != nil {
+	if _, err = toggleactivateLV(config.VgName, metavolume, true); err != nil {
 		return nil, errors.Wrap(err, "Unable to activate metavolume")
 	}
-	if fi, err = os.Stat(metaVolumeMountPath); os.IsNotExist(err) {
-		if errdir := os.MkdirAll(metaVolumeMountPath, 0700); errdir != nil {
-			return nil, errdir
-		}
-	} else {
-		if !fi.IsDir() {
-			return nil, err
-		}
+
+	metavolpath := filepath.Join(config.RootPath, metaVolumeMountName)
+	if errdir := os.MkdirAll(metavolpath, 0700); errdir != nil {
+		return nil, errdir
 	}
 
 	metamount := []mount.Mount{
 		{
-			Source:  "/dev/" + vgname + "/" + metavolume,
-			Type:    "xfs",
+			Source:  "/dev/" + config.VgName + "/" + metavolume,
+			Type:    config.FsType,
 			Options: []string{},
 		},
 	}
 
-	if err = mount.All(metamount, metaVolumeMountPath); err != nil {
+	if err = mount.All(metamount, metavolpath); err != nil {
 		return nil, err
 	}
-	ms, err := storage.NewMetaStore(filepath.Join(metaVolumeMountPath, "metadata.db"))
+	ms, err := storage.NewMetaStore(filepath.Join(metavolpath, "metadata.db"))
 	if err != nil {
 		return nil, err
 	}
 
 	return &snapshotter{
-		vgname:     vgname,
-		lvpoolname: lvpoolname,
-		ms:         ms,
+		config:      config,
+		ms:          ms,
+		metaVolPath: metavolpath,
 	}, nil
 }
 
@@ -242,19 +254,19 @@ func (o *snapshotter) Commit(ctx context.Context, name, key string, opts ...snap
 		}
 		return errors.Wrap(err, "failed to commit snapshot")
 	}
-	if _, err = changepermLV(o.vgname, id, true); err != nil {
+	if _, err = changepermLV(o.config.VgName, id, true); err != nil {
 		return errors.Wrap(err, "Failed to change permissions on volume")
 	}
 
 	// Deactivate the volume in LVM to free up /dev/dm-XX names on the host
-	if _, err = toggleactivateLV(o.vgname, id, false); err != nil {
+	if _, err = toggleactivateLV(o.config.VgName, id, false); err != nil {
 		return errors.Wrap(err, "Failed to change permissions on volume")
 	}
 
 	err = t.Commit()
 	if err != nil {
 		log.G(ctx).WithError(err).Warn("Transaction commit failed")
-		if _, derr := removeLVMVolume(o.vgname, id); derr != nil {
+		if _, derr := removeLVMVolume(o.config.VgName, id); derr != nil {
 			log.G(ctx).WithError(derr).Warn("Unable to delete volume")
 		}
 		return err
@@ -283,7 +295,7 @@ func (o *snapshotter) Remove(ctx context.Context, key string) (err error) {
 		return errors.Wrap(err, "failed to remove")
 	}
 
-	_, err = removeLVMVolume(id, o.vgname)
+	_, err = removeLVMVolume(id, o.config.VgName)
 	if err != nil {
 		return errors.Wrap(err, "failed to deletel LVM volume")
 	}
@@ -339,7 +351,7 @@ func (o *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, k
 		// Create a snapshot from the parent
 		pvol = s.ParentIDs[0]
 	}
-	if _, err := createLVMVolume(s.ID, o.vgname, o.lvpoolname, pvol, kind); err != nil {
+	if _, err := createLVMVolume(s.ID, o.config.VgName, o.config.ThinPool, o.config.ImageSize, pvol, kind); err != nil {
 		log.G(ctx).WithError(err).Warn("Unable to create volume")
 		return nil, errors.Wrap(err, "Unable to create volume")
 	}
@@ -353,7 +365,7 @@ func (o *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, k
 }
 
 func (o *snapshotter) getSnapshotDir(id string) string {
-	return filepath.Join("/dev", o.vgname, id)
+	return filepath.Join("/dev", o.config.VgName, id)
 }
 
 func (o *snapshotter) mounts(s storage.Snapshot) []mount.Mount {
@@ -370,7 +382,7 @@ func (o *snapshotter) mounts(s storage.Snapshot) []mount.Mount {
 	return []mount.Mount{
 		{
 			Source: source,
-			Type:   "xfs",
+			Type:   o.config.FsType,
 			Options: []string{
 				roFlag,
 			},
@@ -384,7 +396,7 @@ func (o *snapshotter) Close() error {
 	if err != nil {
 		return err
 	}
-	err = mount.UnmountAll(metaVolumeMountPath, 0)
+	err = mount.UnmountAll(o.metaVolPath, 0)
 	if err != nil {
 		return err
 	}
