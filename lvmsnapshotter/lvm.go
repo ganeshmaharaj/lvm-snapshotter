@@ -9,7 +9,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-func createLVMVolume(lvname string, vgname string, lvpoolname string, parent string, kind snapshots.Kind) (string, error) {
+func createLVMVolume(lvname string, vgname string, lvpoolname string, size string, parent string, kind snapshots.Kind) (string, error) {
 	cmd := "lvcreate"
 	args := []string{}
 	out := ""
@@ -19,7 +19,7 @@ func createLVMVolume(lvname string, vgname string, lvpoolname string, parent str
 		args = append(args, "--name", lvname, "--snapshot", vgname+"/"+parent)
 	} else {
 		// Create a new logical volume without a base snapshot
-		args = append(args, "--virtualsize", vImgSize, "--name", lvname, "--thin", vgname+"/"+lvpoolname)
+		args = append(args, "--virtualsize", size, "--name", lvname, "--thin", vgname+"/"+lvpoolname)
 	}
 
 	if kind == snapshots.KindView {

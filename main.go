@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"github.com/pkg/errors"
 	"github.com/urfave/cli"
 	"google.golang.org/grpc"
 
@@ -32,7 +34,15 @@ func prepareSnapshotter(addr, vgname, lvpoolname string) error {
 	// snapshotter and a root directory. Your custom snapshotter will be
 	// much more useful than using a snapshotter which is already included.
 	// https://godoc.org/github.com/containerd/containerd/snapshots#Snapshotter
-	sn, err := lvms.NewSnapshotter(vgname, lvpoolname)
+	config := &lvms.LVMSnapConfig{
+		VgName:   vgname,
+		ThinPool: lvpoolname,
+	}
+	if err := config.Validate(""); err != nil {
+		return errors.Wrap(err, "Failed to validate config")
+	}
+	ctx := context.Background()
+	sn, err := lvms.NewSnapshotter(ctx, config)
 	if err != nil {
 		return err
 	}
