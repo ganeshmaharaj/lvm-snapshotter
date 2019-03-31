@@ -140,7 +140,7 @@ func (o *snapshotter) Update(ctx context.Context, info snapshots.Info, fieldpath
 
 	info, err = storage.UpdateInfo(ctx, info, fieldpaths...)
 	if err != nil {
-		if rerr := t.Rollback(); err != nil {
+		if rerr := t.Rollback(); rerr != nil {
 			log.G(ctx).WithError(rerr).Warn("Failed to rollback transaction")
 		}
 		return snapshots.Info{}, err
