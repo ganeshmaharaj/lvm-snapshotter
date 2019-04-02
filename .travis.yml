@@ -3,7 +3,7 @@ dist: xenial
 language: go
 
 go:
-  - "1.11"
+  - "1.11.x"
   - "1.12"
   - tip
 
@@ -24,8 +24,9 @@ install:
     - curl -sfL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh | sh -s -- -b $(go env GOPATH)/bin ${GOLANGCILINT}
 script:
   - go env
-  - go fmt
   - go mod download
+  - go fmt
   - go build
+  - go test ./...
   - golangci-lint run -E gofmt -E unconvert ./...
   - ./tests/test_snapshotter.sh

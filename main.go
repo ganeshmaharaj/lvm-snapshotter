@@ -14,7 +14,7 @@ import (
 
 	snapshotsapi "github.com/containerd/containerd/api/services/snapshots/v1"
 	"github.com/containerd/containerd/contrib/snapshotservice"
-	lvms "github.com/ganeshmaharaj/lvm-snapshotter/lvmsnapshotter"
+	lvms "github.com/ganeshmaharaj/lvm-snapshotter/lvm"
 )
 
 var usage = fmt.Sprint(`an image layering tool using the containerd shapshots
@@ -34,7 +34,7 @@ func prepareSnapshotter(addr, vgname, lvpoolname string) error {
 	// snapshotter and a root directory. Your custom snapshotter will be
 	// much more useful than using a snapshotter which is already included.
 	// https://godoc.org/github.com/containerd/containerd/snapshots#Snapshotter
-	config := &lvms.LVMSnapConfig{
+	config := &lvms.SnapConfig{
 		VgName:   vgname,
 		ThinPool: lvpoolname,
 	}
