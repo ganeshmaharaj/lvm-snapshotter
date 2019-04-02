@@ -1,15 +1,34 @@
-package lvmsnapshotter
+// +build linux
+
+/*
+   Copyright The containerd Authors.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+*/
+
+package lvm
 
 import (
-	"fmt"
+	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 
 	"github.com/containerd/containerd/snapshots"
 	"github.com/pkg/errors"
 )
 
-func createLVMVolume(lvname string, vgname string, lvpoolname string, size string, parent string, kind snapshots.Kind) (string, error) {
+func createLVMVolume(lvname string, vgname string, lvpoolname string, size string, fstype string, parent string, kind snapshots.Kind) (string, error) {
 	cmd := "lvcreate"
 	args := []string{}
 	out := ""
@@ -37,8 +56,8 @@ func createLVMVolume(lvname string, vgname string, lvpoolname string, size strin
 
 	if parent == "" {
 		//This volume is fresh. We should format it.
-		cmd = "mkfs.xfs"
-		args = []string{"-f", "/dev/" + vgname + "/" + lvname}
+		cmd = "mkfs." + fstype
+		args = []string{"/dev/" + vgname + "/" + lvname}
 		out, err = runCommand(cmd, args)
 	}
 
@@ -103,8 +122,14 @@ func toggleactivateLV(vgname string, lvname string, activate bool) (string, erro
 func runCommand(cmd string, args []string) (string, error) {
 	var output []byte
 
-	fmt.Printf("Running command %s with args: %s\n", cmd, args)
+	// Pass context down and log into the tool instead of this.
+	//fmt.Printf("Running command %s with args: %s\n", cmd, args)
 	c := exec.Command(cmd, args...)
+	c.Env = os.Environ()
+	c.SysProcAttr = &syscall.SysProcAttr{
+		Pdeathsig: syscall.SIGTERM,
+	}
+
 	output, err := c.CombinedOutput()
 	return strings.TrimSpace(string(output)), err
 }

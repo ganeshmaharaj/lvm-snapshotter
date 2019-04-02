@@ -1,10 +1,22 @@
-/*
-Copyright Intel Corporation
+// +build linux
 
-Fill this thing up
+/*
+   Copyright The containerd Authors.
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
 */
 
-package lvmsnapshotter
+package lvm
 
 import (
 	"context"
@@ -31,13 +43,13 @@ func init() {
 	plugin.Register(&plugin.Registration{
 		Type:   plugin.SnapshotPlugin,
 		ID:     "lvm",
-		Config: &LVMSnapConfig{},
+		Config: &SnapConfig{},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
 			ic.Meta.Platforms = append(ic.Meta.Platforms, platforms.DefaultSpec())
 
-			config, ok := ic.Config.(*LVMSnapConfig)
+			config, ok := ic.Config.(*SnapConfig)
 			if !ok {
-				return nil, errors.New("Invalid LVM config")
+				return nil, errors.New("invalid LVM config")
 			}
 			if err := config.Validate(ic.Root); err != nil {
 				return nil, errors.Wrap(err, "Unable to validate config")
@@ -49,14 +61,14 @@ func init() {
 }
 
 type snapshotter struct {
-	config      *LVMSnapConfig
+	config      *SnapConfig
 	ms          *storage.MetaStore
 	metaVolPath string
 }
 
 // NewSnapshotter returns a Snapshotter which copies layers on the underlying
 // file system. A metadata file is stored under the root.
-func NewSnapshotter(ctx context.Context, config *LVMSnapConfig) (snapshots.Snapshotter, error) {
+func NewSnapshotter(ctx context.Context, config *SnapConfig) (snapshots.Snapshotter, error) {
 	var err error
 
 	if _, err = checkVG(config.VgName); err != nil {
@@ -71,7 +83,7 @@ func NewSnapshotter(ctx context.Context, config *LVMSnapConfig) (snapshots.Snaps
 	_, err = checkLV(config.VgName, metavolume)
 	if err != nil {
 		// Create a volume to hold the metadata.db file.
-		if _, err = createLVMVolume(metavolume, config.VgName, config.ThinPool, config.ImageSize, "", snapshots.KindUnknown); err != nil {
+		if _, err = createLVMVolume(metavolume, config.VgName, config.ThinPool, config.ImageSize, config.FsType, "", snapshots.KindUnknown); err != nil {
 			return nil, errors.Wrap(err, "Unable to create metadata holding volume")
 		}
 	}
@@ -86,7 +98,7 @@ func NewSnapshotter(ctx context.Context, config *LVMSnapConfig) (snapshots.Snaps
 
 	metamount := []mount.Mount{
 		{
-			Source:  "/dev/" + config.VgName + "/" + metavolume,
+			Source:  filepath.Join("/dev", config.VgName, metavolume),
 			Type:    config.FsType,
 			Options: []string{},
 		},
@@ -351,7 +363,7 @@ func (o *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, k
 		// Create a snapshot from the parent
 		pvol = s.ParentIDs[0]
 	}
-	if _, err := createLVMVolume(s.ID, o.config.VgName, o.config.ThinPool, o.config.ImageSize, pvol, kind); err != nil {
+	if _, err := createLVMVolume(s.ID, o.config.VgName, o.config.ThinPool, o.config.ImageSize, o.config.FsType, pvol, kind); err != nil {
 		log.G(ctx).WithError(err).Warn("Unable to create volume")
 		return nil, errors.Wrap(err, "Unable to create volume")
 	}
