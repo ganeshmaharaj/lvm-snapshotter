@@ -29,6 +29,8 @@ import (
 	"github.com/pkg/errors"
 )
 
+const retries = 10
+
 func createLVMVolume(lvname string, vgname string, lvpoolname string, size string, fstype string, parent string, kind snapshots.Kind) (string, error) {
 	cmd := "lvcreate"
 	args := []string{}
@@ -84,7 +86,11 @@ func createLogicalThinPool(vgname string, lvpool string) (string, error) {
 	args := []string{"--thinpool", lvpool, "--extents", "90%FREE", vgname}
 
 	fmt.Println(args)
-	return runCommand(cmd, args)
+	out, err :=  runCommand(cmd, args)
+	if err != nil && (err.Error() == "exit status 5") {
+		return out, nil
+	}
+	return out, err
 }
 
 func deleteVolumeGroup(vgname string) (string, error) {
@@ -99,10 +105,12 @@ func checkVG(vgname string) (string, error) {
 	output := ""
 	cmd := "vgs"
 	args := []string{vgname, "--options", "vg_name", "--no-headings"}
-	if output, err = runCommand(cmd, args); err != nil {
-		return output, errors.Wrapf(err, "VG %s not found", vgname)
+	ret := 0
+	for (ret < retries && err != nil) {
+		output, err = runCommand(cmd, args)
+		ret++;
 	}
-	return output, nil
+	return output, err
 }
 
 func checkLV(vgname string, lvname string) (string, error) {
@@ -110,10 +118,12 @@ func checkLV(vgname string, lvname string) (string, error) {
 	output := ""
 	cmd := "lvs"
 	args := []string{vgname + "/" + lvname, "--options", "lv_name", "--no-heading"}
-	if output, err = runCommand(cmd, args); err != nil {
-		return output, errors.Wrapf(err, "LV %s not found", lvname)
+	ret := 0
+	for ((ret < retries) && (err != nil)) {
+		output, err = runCommand(cmd, args)
+		ret++;
 	}
-	return output, nil
+	return output, err
 }
 
 func changepermLV(vgname string, lvname string, readonly bool) (string, error) {
