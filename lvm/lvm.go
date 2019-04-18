@@ -19,6 +19,7 @@
 package lvm
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -67,6 +68,28 @@ func createLVMVolume(lvname string, vgname string, lvpoolname string, size strin
 func removeLVMVolume(lvname string, vgname string) (string, error) {
 	cmd := "lvremove"
 	args := []string{"-y", vgname + "/" + lvname}
+
+	return runCommand(cmd, args)
+}
+
+func createVolumeGroup(drive string, vgname string) (string, error) {
+	cmd := "vgcreate"
+	args := []string{vgname, drive}
+
+	return runCommand(cmd, args)
+}
+
+func createLogicalThinPool(vgname string, lvpool string) (string, error) {
+	cmd := "lvcreate"
+	args := []string{"--thinpool", lvpool, "--extents", "90%FREE", vgname}
+
+	fmt.Println(args)
+	return runCommand(cmd, args)
+}
+
+func deleteVolumeGroup(vgname string) (string, error) {
+	cmd := "vgremove"
+	args := []string{"-y", vgname}
 
 	return runCommand(cmd, args)
 }

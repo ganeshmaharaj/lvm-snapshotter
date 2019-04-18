@@ -1,7 +1,7 @@
 module github.com/ganeshmaharaj/lvm-snapshotter
 
 require (
-	github.com/containerd/containerd v1.2.5
+	github.com/containerd/containerd v1.2.1-0.20190327215012-87289a0c6214
 	github.com/containerd/continuity v0.0.0-20181203112020-004b46473808
 	github.com/containerd/typeurl v0.0.0-20190228175220-2a93cfde8c20 // indirect
 	github.com/docker/go-events v0.0.0-20170721190031-9461782956ad // indirect
