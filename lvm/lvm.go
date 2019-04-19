@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/containerd/containerd/snapshots"
 	"github.com/pkg/errors"
@@ -86,7 +87,7 @@ func createLogicalThinPool(vgname string, lvpool string) (string, error) {
 	args := []string{"--thinpool", lvpool, "--extents", "90%FREE", vgname}
 
 	fmt.Println(args)
-	out, err :=  runCommand(cmd, args)
+	out, err := runCommand(cmd, args)
 	if err != nil && (err.Error() == "exit status 5") {
 		return out, nil
 	}
@@ -105,11 +106,7 @@ func checkVG(vgname string) (string, error) {
 	output := ""
 	cmd := "vgs"
 	args := []string{vgname, "--options", "vg_name", "--no-headings"}
-	ret := 0
-	for (ret < retries && err != nil) {
-		output, err = runCommand(cmd, args)
-		ret++;
-	}
+	output, err = runCommand(cmd, args)
 	return output, err
 }
 
@@ -118,11 +115,7 @@ func checkLV(vgname string, lvname string) (string, error) {
 	output := ""
 	cmd := "lvs"
 	args := []string{vgname + "/" + lvname, "--options", "lv_name", "--no-heading"}
-	ret := 0
-	for ((ret < retries) && (err != nil)) {
-		output, err = runCommand(cmd, args)
-		ret++;
-	}
+	output, err = runCommand(cmd, args)
 	return output, err
 }
 
@@ -143,26 +136,55 @@ func changepermLV(vgname string, lvname string, readonly bool) (string, error) {
 func toggleactivateLV(vgname string, lvname string, activate bool) (string, error) {
 	cmd := "lvchange"
 	args := []string{"-K", vgname + "/" + lvname, "-a"}
+	output := ""
+	var err error
 
 	if activate {
 		args = append(args, "y")
 	} else {
 		args = append(args, "n")
 	}
-	return runCommand(cmd, args)
+	output, err = runCommand(cmd, args)
+	return output, err
+}
+
+func toggleactivateVG(vgname string, activate bool) (string, error) {
+	cmd := "vgchange"
+	args := []string{"-K", vgname, "-a"}
+	output := ""
+	var err error
+
+	if activate {
+		args = append(args, "y")
+	} else {
+		args = append(args, "n")
+	}
+	output, err = runCommand(cmd, args)
+	return output, err
 }
 
 func runCommand(cmd string, args []string) (string, error) {
 	var output []byte
+	ret := 0
+	var err error
 
 	// Pass context down and log into the tool instead of this.
-	//fmt.Printf("Running command %s with args: %s\n", cmd, args)
-	c := exec.Command(cmd, args...)
-	c.Env = os.Environ()
-	c.SysProcAttr = &syscall.SysProcAttr{
-		Pdeathsig: syscall.SIGTERM,
+	fmt.Printf("Running command %s with args: %s\n", cmd, args)
+	for ret < retries {
+		c := exec.Command(cmd, args...)
+		c.Env = os.Environ()
+		c.SysProcAttr = &syscall.SysProcAttr{
+			Pdeathsig: syscall.SIGTERM,
+			Setpgid:   true,
+		}
+
+		output, err = c.CombinedOutput()
+		if err == nil {
+			break
+		}
+		ret++
+		time.Sleep(100000 * time.Nanosecond)
 	}
 
-	output, err := c.CombinedOutput()
 	return strings.TrimSpace(string(output)), err
 }

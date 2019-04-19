@@ -2,78 +2,25 @@ package lvm
 
 import (
 	"context"
-	"fmt"
-	"io/ioutil"
 	"runtime"
+	"strconv"
 	"testing"
-	"os"
-	"math/rand"
+	"time"
 
 	"github.com/containerd/containerd/pkg/testutil"
 	"github.com/containerd/containerd/snapshots"
 	"github.com/containerd/containerd/snapshots/testsuite"
-	units "github.com/docker/go-units"
-	"github.com/pkg/errors"
+	"github.com/containerd/continuity/testutil/loopback"
 	"gotest.tools/assert"
 )
 
 const (
 	vgNamePrefix = "vgthin"
 	lvPoolPrefix = "lvthinpool"
-	sparseDrive  = "lvm-snapshot-test-*.img"
-	letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	loopbackSize = int64(10 << 30)
 )
 
-func randString(n int) string {
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = letterBytes[rand.Int63() % int64(len(letterBytes))]
-	}
-	return string(b)
-}
-
-func createLoopBackDevice(imgPath string) (string, error) {
-	cmd := "losetup"
-	args := []string{"--find", "--show", imgPath}
-
-	return runCommand(cmd, args)
-}
-
-func deleteLoopBackDevice(loopDevice string) error {
-	cmd := "losetup"
-	args := []string{"--detach", loopDevice}
-
-	_, err := runCommand(cmd, args)
-	return err
-}
-
-func createSparseDrive(t *testing.T, dir string) (string, string, error) {
-	cwd, err := os.Getwd()
-	assert.NilError(t, err)
-	file, err := ioutil.TempFile(cwd, sparseDrive)
-	assert.NilError(t, err)
-
-	size, err := units.RAMInBytes("10Gb")
-	assert.NilError(t, err)
-
-	err = file.Truncate(size)
-	assert.NilError(t, err)
-
-	err = file.Close()
-	assert.NilError(t, err)
-
-	imagePath := file.Name()
-
-	loopDevice, err := createLoopBackDevice(imagePath)
-	return imagePath, loopDevice, err
-
-}
-
 func TestLVMSnapshotterSuite(t *testing.T) {
-	var loopDevice, imagePath string
-	var vgName string
-	var lvPool string
-	var err error
 	if runtime.GOOS != "linux" {
 		t.Skip("Snapshotter only implemented for Linux")
 	}
@@ -81,19 +28,29 @@ func TestLVMSnapshotterSuite(t *testing.T) {
 	testutil.RequiresRoot(t)
 
 	testLvmSnapshotter := func(ctx context.Context, root string) (snapshots.Snapshotter, func() error, error) {
-		imagePath, loopDevice, err = createSparseDrive(t, root)
+		var loopDevice *loopback.Loopback
+		var vgName string
+		var lvPool string
+		var err error
+		//imagePath, loopDevice, err = createSparseDrive(t, root)
+		loopDevice, err = loopback.New(loopbackSize)
 		assert.NilError(t, err)
-		fmt.Printf("Using device %s", loopDevice)
+		//fmt.Printf("Using device %s", loopDevice.Device)
 
-		suffix := randString(10)
+		//suffix := randString(10)
+		suffix := strconv.Itoa(time.Now().Nanosecond())
 
-		vgName = vgNamePrefix + string(suffix)
-		lvPool = lvPoolPrefix + string(suffix)
+		vgName = vgNamePrefix + suffix
+		lvPool = lvPoolPrefix + suffix
 
-		output, err := createVolumeGroup(loopDevice, vgName)
+		output, err := createVolumeGroup(loopDevice.Device, vgName)
+		assert.NilError(t, err, output)
+
+		output, err = toggleactivateVG(vgName, true)
 		assert.NilError(t, err, output)
 
 		output, err = createLogicalThinPool(vgName, lvPool)
+		assert.NilError(t, err, output)
 
 		config := &SnapConfig{
 			VgName:   vgName,
@@ -106,18 +63,11 @@ func TestLVMSnapshotterSuite(t *testing.T) {
 		assert.NilError(t, err)
 
 		return snap, func() error {
-			if err := snap.Close(); err != nil {
-				return err
-			}
-			if _, err := deleteVolumeGroup(vgName); err != nil {
-				return errors.Wrap(err, "Unable to delete volume group")
-			}
-			if err := deleteLoopBackDevice(loopDevice); err != nil {
-				return err
-			}
-			if err := os.Remove(imagePath); err !=nil {
-				return err
-			}
+			defer func() {
+				snap.Close()
+				deleteVolumeGroup(vgName)
+				loopDevice.Close()
+			}()
 			return nil
 		}, nil
 	}
