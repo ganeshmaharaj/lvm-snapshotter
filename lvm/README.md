@@ -31,8 +31,8 @@ The following configuration options are honored:
 * `vol_group` - a Logical volume group created using lvm tools. This is a mandatory argument.
 * `thin_pool` - a Logical thin pool created using lvm tools. This is a mandatory argument.
 * `root_path` - a directory where the metadata holding volume will be mounted (if empty, default location of `containerd` plugin will be used. If that does not exist `/mnt` is the final fallback).
-* `ImageSize` - size of the thin image created within the thin pool (if empty, default size if `10G`)
-* `FsType` - filesystem type to format the image with (If empty, `xfs` filesystem will be used).
+* `img_size` - size of the thin image created within the thin pool (if empty, default size if `10G`)
+* `fs_type` - filesystem type to format the image with (If empty, `xfs` filesystem will be used).
 
 
 ## Run

@@ -20,6 +20,7 @@ package lvm
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -83,17 +84,27 @@ func NewSnapshotter(ctx context.Context, config *SnapConfig) (snapshots.Snapshot
 	_, err = checkLV(config.VgName, metavolume)
 	if err != nil {
 		// Create a volume to hold the metadata.db file.
-		if _, err = createLVMVolume(metavolume, config.VgName, config.ThinPool, config.ImageSize, config.FsType, "", snapshots.KindUnknown); err != nil {
+		if _, err = createLVMVolume(metavolume, config.VgName, config.ThinPool, config.ImageSize, "", snapshots.KindUnknown); err != nil {
 			return nil, errors.Wrap(err, "Unable to create metadata holding volume")
 		}
-	}
-	if _, err = toggleactivateLV(config.VgName, metavolume, true); err != nil {
-		return nil, errors.Wrap(err, "Unable to activate metavolume")
+		if _, err := toggleactivateLV(config.VgName, metavolume, true); err != nil {
+			log.G(ctx).WithError(err).Warn("Unable to activate metavolume")
+			return nil, errors.Wrap(err, "Unable to create metadata holding volume")
+		}
+
+		if err := formatVolume(config.VgName, metavolume, config.FsType); err != nil {
+			log.G(ctx).WithError(err).Warn("Unable to format metavolume")
+			return nil, errors.Wrap(err, "Unable to create metadata holding volume")
+		}
+	} else {
+		if _, err = toggleactivateLV(config.VgName, metavolume, true); err != nil {
+			return nil, errors.Wrap(err, "Unable to activate metavolume")
+		}
 	}
 
 	metavolpath := filepath.Join(config.RootPath, metaVolumeMountName)
 	if errdir := os.MkdirAll(metavolpath, 0700); errdir != nil {
-		return nil, errdir
+		return nil, errors.Wrap(errdir, "Unable to find metavolume path")
 	}
 
 	metamount := []mount.Mount{
@@ -105,11 +116,11 @@ func NewSnapshotter(ctx context.Context, config *SnapConfig) (snapshots.Snapshot
 	}
 
 	if err = mount.All(metamount, metavolpath); err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, fmt.Sprintf("unable to mount metavolume %+v", metamount))
 	}
 	ms, err := storage.NewMetaStore(filepath.Join(metavolpath, "metadata.db"))
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "unable to create new meta store")
 	}
 
 	return &snapshotter{
@@ -174,11 +185,11 @@ func (o *snapshotter) Usage(ctx context.Context, key string) (snapshots.Usage, e
 		return snapshots.Usage{}, err
 	}
 	defer func() {
-		if rerr := t.Rollback(); err != nil {
+		if rerr := t.Rollback(); rerr != nil {
 			log.G(ctx).WithError(rerr).Warn("Failed to rollback transaction")
 		}
 	}()
-	id, info, usage, err := storage.GetInfo(ctx, key)
+	_, info, usage, err := storage.GetInfo(ctx, key)
 	if err != nil {
 		return snapshots.Usage{}, err
 	}
@@ -189,7 +200,7 @@ func (o *snapshotter) Usage(ctx context.Context, key string) (snapshots.Usage, e
 		}
 		mounts := o.mounts(s)
 		if err = mount.WithTempMount(ctx, mounts, func(root string) error {
-			if du, err = fs.DiskUsage(ctx, o.getSnapshotDir(id)); err != nil {
+			if du, err = fs.DiskUsage(ctx, root); err != nil {
 				return err
 			}
 			usage = snapshots.Usage(du)
@@ -224,12 +235,14 @@ func (o *snapshotter) Mounts(ctx context.Context, key string) ([]mount.Mount, er
 		return nil, err
 	}
 	s, err := storage.GetSnapshot(ctx, key)
-	if rerr := t.Rollback(); rerr != nil {
-		log.G(ctx).WithError(rerr).Warn("failed to rollback transaction")
-	}
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to get snapshot mount")
+		return []mount.Mount{}, err
 	}
+	defer func() {
+		if rerr := t.Rollback(); rerr != nil {
+			log.G(ctx).WithError(rerr).Warn("failed to rollback transaction")
+		}
+	}()
 	log.G(ctx).Debugf("Mounts for key %s is %+v", key, o.mounts(s))
 	return o.mounts(s), nil
 }
@@ -251,7 +264,7 @@ func (o *snapshotter) Commit(ctx context.Context, name, key string, opts ...snap
 	s, err := storage.GetSnapshot(ctx, key)
 	mounts := o.mounts(s)
 	if err = mount.WithTempMount(ctx, mounts, func(root string) error {
-		if du, err = fs.DiskUsage(ctx, o.getSnapshotDir(id)); err != nil {
+		if du, err = fs.DiskUsage(ctx, root); err != nil {
 			return err
 		}
 		usage = snapshots.Usage(du)
@@ -259,15 +272,20 @@ func (o *snapshotter) Commit(ctx context.Context, name, key string, opts ...snap
 	}); err != nil {
 		return err
 	}
+	defer func() {
+		if err != nil && t != nil {
+			if rerr := t.Rollback(); rerr != nil {
+				log.G(ctx).WithError(rerr).Warn("failed to rollback transaction")
+			}
+		}
+	}()
 
 	if _, err = storage.CommitActive(ctx, key, name, usage, opts...); err != nil {
-		if rerr := t.Rollback(); rerr != nil {
-			log.G(ctx).WithError(rerr).Warn("failed to rollback transaction")
-		}
 		return errors.Wrap(err, "failed to commit snapshot")
 	}
-	if _, err = changepermLV(o.config.VgName, id, true); err != nil {
-		return errors.Wrap(err, "Failed to change permissions on volume")
+
+	if err = unmountVolume(o.config.VgName, id); err != nil {
+		return errors.Wrap(err, "Unable to remove all the volume mounts")
 	}
 
 	// Deactivate the volume in LVM to free up /dev/dm-XX names on the host
@@ -278,6 +296,9 @@ func (o *snapshotter) Commit(ctx context.Context, name, key string, opts ...snap
 	err = t.Commit()
 	if err != nil {
 		log.G(ctx).WithError(err).Warn("Transaction commit failed")
+		if derr := unmountVolume(o.config.VgName, id); derr != nil {
+			return errors.Wrap(err, "Unable to remove all the volume mounts")
+		}
 		if _, derr := removeLVMVolume(o.config.VgName, id); derr != nil {
 			log.G(ctx).WithError(derr).Warn("Unable to delete volume")
 		}
@@ -307,17 +328,24 @@ func (o *snapshotter) Remove(ctx context.Context, key string) (err error) {
 		return errors.Wrap(err, "failed to remove")
 	}
 
-	_, err = removeLVMVolume(id, o.config.VgName)
+	if err = unmountVolume(o.config.VgName, id); err != nil {
+		return errors.Wrap(err, "Unable to remove all the volume mounts")
+	}
+
+	if _, err = toggleactivateLV(o.config.VgName, id, false); err != nil {
+		return errors.Wrap(err, "Unable to deactivate metavolume")
+	}
+
+	_, err = removeLVMVolume(o.config.VgName, id)
 	if err != nil {
-		return errors.Wrap(err, "failed to deletel LVM volume")
+		return errors.Wrap(err, "failed to delete LVM volume")
 	}
 
 	err = t.Commit()
-	t = nil
 	if err != nil {
 		return errors.Wrap(err, "failed to commit")
 	}
-
+	t = nil
 	return nil
 }
 
@@ -363,17 +391,42 @@ func (o *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, k
 		// Create a snapshot from the parent
 		pvol = s.ParentIDs[0]
 	}
-	if _, err := createLVMVolume(s.ID, o.config.VgName, o.config.ThinPool, o.config.ImageSize, o.config.FsType, pvol, kind); err != nil {
+	if _, err := createLVMVolume(s.ID, o.config.VgName, o.config.ThinPool, o.config.ImageSize, pvol, kind); err != nil {
 		log.G(ctx).WithError(err).Warn("Unable to create volume")
 		return nil, errors.Wrap(err, "Unable to create volume")
 	}
 
-	if err := t.Commit(); err != nil {
-		return nil, err
+	if _, err := toggleactivateLV(o.config.VgName, s.ID, true); err != nil {
+		log.G(ctx).WithError(err).Warn("Unable to activate new volume")
+		return nil, errors.Wrap(err, "Unable to create volume")
 	}
 
+	if pvol == "" {
+		if err := formatVolume(o.config.VgName, s.ID, o.config.FsType); err != nil {
+			log.G(ctx).WithError(err).Warn("Unable to format new volume")
+			return nil, errors.Wrap(err, "Unable to create volume")
+		}
+	}
+
+	err = t.Commit()
+	if err != nil {
+		return nil, err
+	}
+	t = nil
+
 	log.G(ctx).Debugf("Mounts for key %s is %+v", key, o.mounts(s))
-	return o.mounts(s), nil
+	mounts := o.mounts(s)
+
+	// Ext4 creates a "lost+found" directory which messes up with difflayer.
+	// Clear it out prior to handing this over.
+	if o.config.FsType == "ext4" {
+		_ = mount.WithTempMount(ctx, mounts, func(root string) error {
+			return os.Remove(filepath.Join(root, "lost+found"))
+		})
+	}
+
+	return mounts, nil
+
 }
 
 func (o *snapshotter) getSnapshotDir(id string) string {
@@ -382,22 +435,25 @@ func (o *snapshotter) getSnapshotDir(id string) string {
 
 func (o *snapshotter) mounts(s storage.Snapshot) []mount.Mount {
 	var (
-		roFlag string
-		source string
+		source   string
+		moptions []string
 	)
 
 	if s.Kind == snapshots.KindView {
-		roFlag = "-oro"
+		moptions = append(moptions, "ro")
+	}
+
+	//This will allow two filesystems with same UUID to be mounted on a machine.
+	if o.config.FsType == "xfs" {
+		moptions = append(moptions, "nouuid")
 	}
 
 	source = o.getSnapshotDir(s.ID)
 	return []mount.Mount{
 		{
-			Source: source,
-			Type:   o.config.FsType,
-			Options: []string{
-				roFlag,
-			},
+			Source:  source,
+			Type:    o.config.FsType,
+			Options: moptions,
 		},
 	}
 }
@@ -408,7 +464,11 @@ func (o *snapshotter) Close() error {
 	if err != nil {
 		return err
 	}
-	err = mount.UnmountAll(o.metaVolPath, 0)
+	err = unmountVolume(o.config.VgName, metavolume)
+	if err != nil {
+		return err
+	}
+	_, err = toggleactivateLV(o.config.VgName, metavolume, false)
 	if err != nil {
 		return err
 	}
