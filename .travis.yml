@@ -1,10 +1,10 @@
-dist: xenial
+dist: bionic
 
 language: go
 
 go:
   - "1.11.x"
-  - "1.12"
+  - "1.12.x"
   - tip
 
 env:
@@ -30,3 +30,4 @@ script:
   - go test ./...
   - golangci-lint run -E gofmt -E unconvert ./...
   - ./tests/test_snapshotter.sh
+  - sudo PATH=$PATH GOPATH=$GOPATH GO111MODULE=on bash -c 'go test ./... -v -test.root -parallel 8'

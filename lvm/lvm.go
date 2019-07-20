@@ -21,14 +21,55 @@ package lvm
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/containerd/containerd/snapshots"
 	"github.com/pkg/errors"
 )
 
-func createLVMVolume(lvname string, vgname string, lvpoolname string, size string, fstype string, parent string, kind snapshots.Kind) (string, error) {
+const retries = 10
+
+// This global mutex is used only during volume group creation and deletion
+// which will be only executed during test code to mitigate
+// https://bugzilla.redhat.com/show_bug.cgi?id=1672336. This should have no
+// performance impact during production as the volume groups would have already
+// been created.
+var mutex sync.Mutex
+
+func formatVolume(vgname string, lvname string, fstype string) error {
+	var mkfsArgs []string
+	switch fstype {
+	case "ext4":
+		mkfsArgs = append(mkfsArgs, "-E", "nodiscard,lazy_itable_init=0,lazy_journal_init=0")
+	case "xfs":
+		mkfsArgs = append(mkfsArgs, "-K")
+	default:
+	}
+
+	cmd := "mkfs." + fstype
+	mkfsArgs = append(mkfsArgs, filepath.Join("/dev/", vgname, lvname))
+	_, err := runCommand(cmd, mkfsArgs)
+	return err
+}
+
+func unmountVolume(vgname string, lvname string) error {
+	cmd := "umount"
+	args := []string{"--lazy", "--force", "--all-targets", filepath.Join("/dev", vgname, lvname)}
+	var re = regexp.MustCompile(`not mounted|not found`)
+
+	output, err := runCommand(cmd, args)
+	if err != nil && !re.MatchString(output) {
+		return errors.Wrap(err, "Unable to remove volume mounts")
+	}
+	return nil
+}
+
+func createLVMVolume(lvname string, vgname string, lvpoolname string, size string, parent string, kind snapshots.Kind) (string, error) {
 	cmd := "lvcreate"
 	args := []string{}
 	out := ""
@@ -41,32 +82,53 @@ func createLVMVolume(lvname string, vgname string, lvpoolname string, size strin
 		args = append(args, "--virtualsize", size, "--name", lvname, "--thin", vgname+"/"+lvpoolname)
 	}
 
-	if kind == snapshots.KindView {
-		args = append(args, "-pr")
-	}
+	// This change will prevent the volume from being mountable. Relying on the
+	// mount command to do read-only mounting.
+	//if kind == snapshots.KindView {
+	//	args = append(args, "-pr")
+	//}
 
 	//Let's go and create the volume
 	if out, err = runCommand(cmd, args); err != nil {
 		return out, errors.Wrap(err, "Unable to create volume")
 	}
 
-	if out, err = toggleactivateLV(vgname, lvname, true); err != nil {
-		return out, errors.Wrap(err, "Unable to activate thin volume")
-	}
-
-	if parent == "" {
-		//This volume is fresh. We should format it.
-		cmd = "mkfs." + fstype
-		args = []string{"/dev/" + vgname + "/" + lvname}
-		out, err = runCommand(cmd, args)
-	}
-
 	return out, err
 }
 
-func removeLVMVolume(lvname string, vgname string) (string, error) {
+func removeLVMVolume(vgname string, lvname string) (string, error) {
+
 	cmd := "lvremove"
 	args := []string{"-y", vgname + "/" + lvname}
+
+	return runCommand(cmd, args)
+}
+
+func createVolumeGroup(drive string, vgname string) (string, error) {
+	mutex.Lock()
+	defer mutex.Unlock()
+	cmd := "vgcreate"
+	args := []string{vgname, drive}
+
+	return runCommand(cmd, args)
+}
+
+func createLogicalThinPool(vgname string, lvpool string) (string, error) {
+	cmd := "lvcreate"
+	args := []string{"--thinpool", lvpool, "--extents", "90%FREE", vgname}
+
+	out, err := runCommand(cmd, args)
+	if err != nil && (err.Error() == "exit status 5") {
+		return out, nil
+	}
+	return out, err
+}
+
+func deleteVolumeGroup(vgname string) (string, error) {
+	mutex.Lock()
+	defer mutex.Unlock()
+	cmd := "vgremove"
+	args := []string{"-y", vgname}
 
 	return runCommand(cmd, args)
 }
@@ -76,10 +138,8 @@ func checkVG(vgname string) (string, error) {
 	output := ""
 	cmd := "vgs"
 	args := []string{vgname, "--options", "vg_name", "--no-headings"}
-	if output, err = runCommand(cmd, args); err != nil {
-		return output, errors.Wrapf(err, "VG %s not found", vgname)
-	}
-	return output, nil
+	output, err = runCommand(cmd, args)
+	return output, err
 }
 
 func checkLV(vgname string, lvname string) (string, error) {
@@ -87,49 +147,75 @@ func checkLV(vgname string, lvname string) (string, error) {
 	output := ""
 	cmd := "lvs"
 	args := []string{vgname + "/" + lvname, "--options", "lv_name", "--no-heading"}
-	if output, err = runCommand(cmd, args); err != nil {
-		return output, errors.Wrapf(err, "LV %s not found", lvname)
-	}
-	return output, nil
-}
-
-func changepermLV(vgname string, lvname string, readonly bool) (string, error) {
-	cmd := "lvchange"
-	args := []string{}
-
-	if readonly {
-		args = append(args, "-pr")
-	} else {
-		args = append(args, "-prw")
-	}
-	args = append(args, vgname+"/"+lvname)
-
-	return runCommand(cmd, args)
+	output, err = runCommand(cmd, args)
+	return output, err
 }
 
 func toggleactivateLV(vgname string, lvname string, activate bool) (string, error) {
 	cmd := "lvchange"
 	args := []string{"-K", vgname + "/" + lvname, "-a"}
+	output := ""
+	var err error
+	ret := 0
 
 	if activate {
 		args = append(args, "y")
 	} else {
 		args = append(args, "n")
 	}
-	return runCommand(cmd, args)
+	// This function is always called right after unmount of all volumes is
+	// invoked to make sure that all IO is complete and there will be no possible
+	// data corruption when the volume is hidden from the host. Adding delay here
+	// for IO completion and proper unmounting.
+	for ret < retries {
+		output, err = runCommand(cmd, args)
+		if err != nil {
+			ret++
+			time.Sleep(time.Duration(ret) * time.Second)
+		} else {
+			break
+		}
+	}
+	return output, err
+}
+
+func toggleactivateVG(vgname string, activate bool) (string, error) {
+	cmd := "vgchange"
+	args := []string{"-K", vgname, "-a"}
+	output := ""
+	var err error
+
+	if activate {
+		args = append(args, "y")
+	} else {
+		args = append(args, "n")
+	}
+	output, err = runCommand(cmd, args)
+	return output, err
 }
 
 func runCommand(cmd string, args []string) (string, error) {
 	var output []byte
+	ret := 0
+	var err error
 
 	// Pass context down and log into the tool instead of this.
-	//fmt.Printf("Running command %s with args: %s\n", cmd, args)
-	c := exec.Command(cmd, args...)
-	c.Env = os.Environ()
-	c.SysProcAttr = &syscall.SysProcAttr{
-		Pdeathsig: syscall.SIGTERM,
+	// fmt.Printf("Running command %s with args: %s\n", cmd, args)
+	for ret < retries {
+		c := exec.Command(cmd, args...)
+		c.Env = os.Environ()
+		c.SysProcAttr = &syscall.SysProcAttr{
+			Pdeathsig: syscall.SIGTERM,
+			Setpgid:   true,
+		}
+
+		output, err = c.CombinedOutput()
+		if err == nil {
+			break
+		}
+		ret++
+		time.Sleep(100000 * time.Nanosecond)
 	}
 
-	output, err := c.CombinedOutput()
 	return strings.TrimSpace(string(output)), err
 }
