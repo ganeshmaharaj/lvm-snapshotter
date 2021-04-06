@@ -4,7 +4,8 @@ set -o errexit
 set -o nounset
 set -o xtrace
 
-CONTD_VER=$(curl -fsSLI -o /dev/null -w %{url_effective} https://github.com/containerd/containerd/releases/latest | awk -F '/' '{sub("^v", "", $8); print $8}')
+contd_ver=$(curl -q https://api.github.com/repos/containerd/containerd/releases | grep "tag_name" | awk -F '"' '{print $4}'  | sort -rV | head -1)
+: ${CONTD_VER:=${contd_ver#v}}
 drive="`pwd`/dummydevice.img"
 drivesize="10G"
 lodevice=""
@@ -41,7 +42,7 @@ function create_lvm_stuff()
 
 function start_snapshotter()
 {
-  cmd="$(pwd)/lvm-snapshotter --addr /var/run/lvmsnapshotter.sock --vgname vgthin --lvpoolname lvthinpool"
+  cmd="$(dirname ${0})/../lvm-snapshotter --addr /var/run/lvmsnapshotter.sock --vgname vgthin --lvpoolname lvthinpool"
   nohup sudo $cmd 2>&1 > /tmp/lvmsnapshotter.log &
 }
 
@@ -60,7 +61,7 @@ function stop_snapshotter()
 function start_containerd()
 {
   echo "Downloading containerd release for ${CONTD_VER}..."
-  curl https://storage.googleapis.com/cri-containerd-release/cri-containerd-${CONTD_VER}.linux-amd64.tar.gz | sudo tar --no-overwrite-dir -C / -xzf -
+  curl --location https://github.com/containerd/containerd/releases/download/v${CONTD_VER}/cri-containerd-cni-${CONTD_VER}-linux-amd64.tar.gz --output - | sudo -E tar -C / -zxvf -
   sudo mkdir -p /etc/containerd
   sudo bash -c 'cat << EOF > /etc/containerd/config.toml
 [proxy_plugins]
@@ -68,7 +69,8 @@ function start_containerd()
     type = "snapshot"
     address = "/var/run/lvmsnapshotter.sock"
 EOF'
-  nohup sudo /usr/local/bin/containerd 2>&1 > /tmp/containerd.log &
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now containerd
   i=0
   while [[ ! $(sudo ls /run/containerd/containerd.sock) && i -le 10 ]]
   do
@@ -79,15 +81,15 @@ EOF'
 
 function test_snapshotter()
 {
-  sudo ctr i pull --snapshotter=lvmsnapshotter docker.io/library/busybox:latest
-  sudo ctr i pull --snapshotter=lvmsnapshotter docker.io/library/nginx:latest
-  if [ $(sudo lvs ${vgname} --no-heading | wc -l) != 6 ]; then
+  sudo ctr i pull --snapshotter=lvmsnapshotter mirror.gcr.io/library/busybox:latest
+  sudo ctr i pull --snapshotter=lvmsnapshotter mirror.gcr.io/library/nginx:latest
+  if [ $(sudo lvs ${vgname} --no-heading | wc -l) != 9 ]; then
     echo "Right no. of volumes not created"
     exit 1
   fi
 
-  sudo ctr i remove --sync docker.io/library/busybox:latest
-  sudo ctr i remove --sync docker.io/library/nginx:latest
+  sudo ctr i remove --sync mirror.gcr.io/library/busybox:latest
+  sudo ctr i remove --sync mirror.gcr.io/library/nginx:latest
   if [ $(sudo lvs ${vgname} --no-heading | wc -l) != 2 ]; then
     echo "Right no. of volumes not created"
     exit 1

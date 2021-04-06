@@ -350,7 +350,7 @@ func (o *snapshotter) Remove(ctx context.Context, key string) (err error) {
 }
 
 // Walk the committed snapshots.
-func (o *snapshotter) Walk(ctx context.Context, fn func(context.Context, snapshots.Info) error) error {
+func (o *snapshotter) Walk(ctx context.Context, fn snapshots.WalkFunc, fs ...string) error {
 	log.G(ctx).Debugf("Walk through %+v", ctx)
 	ctx, t, err := o.ms.TransactionContext(ctx, false)
 	if err != nil {
@@ -361,7 +361,7 @@ func (o *snapshotter) Walk(ctx context.Context, fn func(context.Context, snapsho
 			log.G(ctx).WithError(rerr).Warn("Failed to rollback transaction")
 		}
 	}()
-	return storage.WalkInfo(ctx, fn)
+	return storage.WalkInfo(ctx, fn, fs...)
 }
 
 func (o *snapshotter) createSnapshot(ctx context.Context, kind snapshots.Kind, key, parent string, opts []snapshots.Opt) (_ []mount.Mount, err error) {
