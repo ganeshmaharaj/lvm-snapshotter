@@ -17,14 +17,16 @@ import (
 	lvms "github.com/ganeshmaharaj/lvm-snapshotter/lvm"
 )
 
-var usage = fmt.Sprint(`an image layering tool using the containerd shapshots
+var usage = `an image layering tool using the containerd shapshots
 	 API and the thin logical volume device mapper of LVM.
 
 	 To run lvm-snapshotter a path to the unix socket address, volume group name,
 	 and logical volume pool name are required:
 
 	 $ lvm-snapshotter --addr /path/to/socket --vgname volumegroup --lvpoolname poolname
-`)
+`
+
+const lvmSnapshotterVersion string = "0.0.1"
 
 func prepareSnapshotter(addr, vgname, lvpoolname string) error {
 	// Create a gRPC server
@@ -90,6 +92,7 @@ func createApp() error {
 	app := cli.NewApp()
 	app.Name = "lvmsnapshotter"
 	app.Usage = usage
+	app.Version = lvmSnapshotterVersion
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
 			Name:        "addr",

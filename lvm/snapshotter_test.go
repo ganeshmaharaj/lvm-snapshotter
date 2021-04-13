@@ -50,7 +50,7 @@ func TestLVMSnapshotterSuite(t *testing.T) {
 		var lvPool string
 		var err error
 		//imagePath, loopDevice, err = createSparseDrive(t, root)
-		loopDevice, loopCleanFn, err := loopback.New(loopbackSize)
+		loopDevice, err := loopback.New(loopbackSize)
 		assert.NilError(t, err)
 		//fmt.Printf("Using device %s", loopDevice)
 
@@ -60,7 +60,7 @@ func TestLVMSnapshotterSuite(t *testing.T) {
 		vgName = vgNamePrefix + suffix
 		lvPool = lvPoolPrefix + suffix
 
-		output, err := createVolumeGroup(loopDevice, vgName)
+		output, err := createVolumeGroup(loopDevice.Device, vgName)
 		assert.NilError(t, err, output)
 
 		output, err = toggleactivateVG(vgName, true)
@@ -82,7 +82,7 @@ func TestLVMSnapshotterSuite(t *testing.T) {
 		return snap, func() error {
 			snap.Close()
 			deleteVolumeGroup(vgName)
-			loopCleanFn()
+			loopDevice.Close()
 			return nil
 		}, nil
 	}
